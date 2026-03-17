@@ -1,6 +1,6 @@
 # GradientBased-Patchscope-for-Neuron
 
-AI-assistead readme.md
+
 
 
 ## Architecture & Methodology
