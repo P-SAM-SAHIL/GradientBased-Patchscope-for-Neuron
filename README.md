@@ -17,203 +17,210 @@ University of Oxford
 
 ## Abstract
 
-## **Abstract**
+This report presents a gradient based Patchscope method for interpreting
+a computational circuit in Gemma 2 2B. The study targets Layer 12,
+Neuron 8526, a node that consistently behaves as an abstract mathematics
+and definitional neuron. The method adapts the Patchscopes
+framework[@ghandeharioun2024patchscopesunifyingframeworkinspecting] by
+replacing the usual source prompt representation with a continuous
+residual vector obtained through gradient ascent. This vector is
+optimized to maximize the activation of the target neuron, decomposed
+with a Gemma Scope sparse
+autoencoder[@lieberum2024gemmascopeopensparse], and then decoded into
+natural language with contrastive Patchscope generation. The pipeline
+was run from two source layers, Layer 8 and Layer 11, while keeping the
+same downstream target. The results show a consistent cross layer
+circuit. Earlier residual features provide mathematical syntax like
+structure, later residual features organize that structure into concrete
+mathematical concepts, and the downstream neuron drives explicit
+definitional text. This approach provides direct causal evidence that
+goes beyond observational feature labels derived from datasets alone.
+
+Repository: P-SAM-SAHIL/GradientBased-Patchscope-for-Neuron
+
+## Background and Motivation
+
+Mechanistic interpretability seeks to explain neural networks in terms
+of simpler internal computations. Sparse autoencoders are central to
+this effort because they decompose dense activations into sparse and
+more interpretable features. Resources such as Gemma Scope and
+Neuronpedia make these features easier to inspect and label. But most
+existing workflows remain observational. They describe what features co
+occur with in data. They do not directly test what those features do
+inside the model.
+
+This limitation becomes clear when researchers try to find inputs that
+activate a specific neuron. Earlier methods often search in discrete
+token space. That process is slow, unstable, and prone to generating
+unnatural text. It also constrains the search to token sequences that
+may not cleanly reflect the downstream computation. The present work
+avoids that problem by optimizing directly in residual space.
+
+This study also addresses a second problem. Dataset based feature labels
+often confuse context with function. A feature that appears near
+software licenses can be labeled as a copyright feature even if its real
+role in computation is mathematical syntax or formatting. Causal
+intervention is needed to resolve that ambiguity. (as The Label
+generated for feature on Neuropedia is By LLM)
+
+Patchscopes offers a useful foundation for this intervention. In the
+original framework, a hidden representation from a source prompt is
+patched into a target prompt, and the model's output reveals what the
+representation encodes in natural language. This study keeps that
+source, target, patch, and reveal logic, but changes the source object.
+Instead of taking a representation from a natural prompt, it constructs
+a continuous residual vector through gradient optimization and then
+decodes that vector with a Patchscope style target prompt.
+
+## Methodology
+
+The implementation follows the same code structure in both experiments.
+Gemma 2 2B is loaded through TransformerLens across two GPUs in
+\`bfloat16\`. Because the model is distributed across devices, the
+unembedding weights are cloned onto the final device so that tied
+embeddings remain consistent during generation.
+
+The target of the intervention is fixed throughout the study. The code
+sets \`target_layer = 12\` and \`target_neuron_idx = 8526\`. The source
+layer is varied across runs, first with \`early_layer = 8\` and then
+with \`early_layer = 11\`.
+
+The first phase computes a baseline residual state. The code loads the
+first 100 samples from \`NeelNanda/pile-10k\`, converts them to strings,
+tokenizes them with left padding, and keeps the final 32 tokens of each
+sequence. It then extracts \`blocks.{early_layer}.hook_resid_pre\` at
+the last token position and averages these activations across the batch.
+This average becomes the Mean Vector. It represents the typical
+background state of the source layer before targeted activation.
+
+The second phase performs gradient based search in residual space. A
+learnable vector \`X\` is initialized from the Mean Vector and optimized
+with Adam at learning rate \`0.05\` for \`50\` steps. The code injects
+\`X\` into \`blocks.{early_layer}.hook_resid_pre\` at the position of
+\`x\` in the dummy prompt \`\"\<pad\> \<pad\> \<pad\> x\"\`. The loss is
+defined as the negative activation of \`blocks.12.mlp.hook_post\` at
+neuron \`8526\`. This makes the optimization directly maximize the
+target neuron while keeping the model weights frozen. The final
+optimized tensor is stored as the Optimized Vector.
+
+The third phase verifies the optimized signal with a sparse autoencoder.
+The code loads the Gemma Scope SAE for the matching source layer with
+\`sae_id = f\"layer\_{early_layer}/width_16k/canonical\"\`. The
+Optimized Vector is encoded through the SAE, and the top activating
+features are extracted. This step identifies the sparse concepts that
+dominate the dense residual vector.
+
+The fourth phase applies Patchscope style decoding. The target prompt is
+fixed as \"A detailed description of $X$ is that\". The model runs two
+contrastive branches with separate KV caches. In the signal branch, the
+Optimized Vector is patched into the source layer at the token position
+aligned with $X$ . In the noise branch, the Mean Vector is patched into
+the same position. The final decoding logits are computed as
+
+$FinalLogits = L_{act} + alpha(L_{act} - L_{mean})$
+
+with $alpha = 1.5$. Generation then proceeds autoregressively for \`20\`
+tokens. This stage turns the optimized residual signal into natural
+language and serves as the reveal step of the Patchscope.
+
+## Results
+
+The pipeline was run twice against the same downstream target. In both
+runs, Layer 12, Neuron 8526 behaved as a definitional mathematics
+neuron. When activated through optimized upstream residual vectors, it
+pushed the model toward formal mathematical description.
+
+In the first experiment, the source layer was Layer 8. Optimization
+started at an activation of \`4.8125\` and rose steadily across 50
+steps. By step 40, the activation had reached \`50.0000\`, and during
+Patchscope prefill the target neuron reached \`56.0000\`. SAE
+decomposition showed that the strongest source layer component was
+\`Feature_302\`, with activation \`41.6082\`. The decoded text was: "it
+is a number that is not a real number. So, it is a number that is not".
+Although the generation was truncated at 20 tokens, its meaning is
+clear. The optimized Layer 8 signal drives the model toward the
+definition of an imaginary or non real number. This indicates that the
+earlier part of the circuit contains mathematical syntax and
+representational cues that the downstream neuron can use for abstract
+definitional output.
+
+In the second experiment, the source layer was Layer 11. Optimization
+began at \`5.8750\` and rose to \`57.0000\` by step 40. During
+Patchscope prefill, the target neuron reached \`62.7500\`, which
+exceeded the Layer 8 result. SAE analysis identified \`Feature_10839\`
+as the dominant component, with activation \`15.9724\`. The decoded
+output was: "it is a set of all the points in the plane that are
+equidistant from a fixed point and". This is the beginning of a standard
+geometric definition of a circle. Again, the output was truncated by the
+20 token limit, but the semantic direction is unambiguous. At Layer 11,
+the circuit has moved beyond lower level structure and is already
+representing a concrete mathematical relation that Layer 12 turns into
+formal explanation.
+
+Taken together, the two experiments reveal a hierarchical cross layer
+pathway. The Layer 8 intervention suggests that early residual features
+provide syntax like or symbolic structure that is useful for
+mathematical reasoning. The Layer 11 intervention shows a later stage in
+which that structure has already been organized into a concrete
+geometric concept. Layer 12, Neuron 8526, appears to sit at the
+definitional stage of this circuit, where upstream mathematical
+structure is converted into explicit explanatory text.
+
+## Interpretation
+
+These results show why observational labels are often not enough. A
+feature can be associated with one theme in a dataset and still perform
+a different role in computation. In this study, the optimized vectors
+did not produce outputs about document structure, software licenses, or
+generic formatting. Which is shown by top SAE Features .They produced
+definitions. That is the causal behavior that matters.
+
+The results also clarify how Patchscopes is being used here. The method
+does not simply inspect a naturally occurring hidden state. It first
+constructs a residual vector that is maximally useful to a chosen
+downstream neuron. It then uses Patchscope decoding to reveal what that
+vector functionally represents. This makes the procedure both
+interventive and explanatory. It is not only asking what information is
+present. It is testing what information is sufficient to drive a
+specific neuron.
+
+## Conclusion
+
+This study introduces a gradient based Patchscope pipeline for causal
+circuit analysis in Gemma 2 2B. The approach optimizes a continuous
+residual vector, verifies it with Gemma Scope SAEs, and decodes it
+through a Patchscope style contrastive target prompt. When applied to
+Layer 12, Neuron 8526, the method reveals a stable abstract mathematics
+and definitional circuit. The Layer 8 run points to lower level
+mathematical structure. The Layer 11 run reveals a more developed
+geometric concept. Both converge on the same downstream function. The
+main contribution is methodological and empirical at once. It shows that
+continuous residual optimization can be combined with Patchscopes to
+move from observational labeling to direct causal explanation.
+
+## Future Work
+
+The next step is stronger validation. The optimization should be
+repeated from multiple random initializations to test whether the same
+sparse features appear consistently. Feature ablation is also necessary.
+If suppressing the dominant source layer feature reduces the activation
+of Layer 12, Neuron 8526, that would establish necessity rather than
+association.
+
+A second step is forward pass evaluation under controlled prompts. The
+relevant source layer features should be tested on pure mathematical
+formatting, pure licensing text, and mixed contexts. This will show what
+input conditions actually engage the circuit during normal inference.
+
+A third step is direct intervention during unrelated generation. If
+forced activation of the source feature or the target neuron shifts the
+model toward mathematical definitions in otherwise neutral contexts, the
+causal role of the circuit will be even clearer.
+
+Finally, the same pipeline should be scaled across additional layers and
+target neurons. That would allow the broader abstract mathematics graph
+in Gemma 2 2B to be mapped more systematically and would help correct
+misleading feature labels in existing interpretability datasets.
 
-This report shares a new way to understand Large Language Models. We combine gradient vector optimization with Patchscopes.[@ghandeharioun2024patchscopesunifyingframeworkinspecting] This isolates and validates computational circuits across layers.
 
-We applied this method to Gemma 2 2B. We targeted a specific node for abstract math and definitions at Layer 12 Neuron 8526. We ignore search methods based on datasets because token space limits them.
 
-Instead we use gradient ascent in the early residual stream. This builds a vector that drives the target neuron perfectly. Then we use Gemma Scope Sparse Autoencoders. These break the vectors down into features humans understand. Finally we use contrastive decoding to generate plain text explanations of the concepts.
-
-**Repository:**  
-[P-SAM-SAHIL/GradientBased-Patchscope-for-Neuron](https://github.com/P-SAM-SAHIL/GradientBased-Patchscope-for-Neuron)
-
----
-
-## **Background & The Interpretability Gap**
-
-Mechanistic interpretability tries to reverse engineer neural networks into simple algorithms. A main tool here is the Sparse Autoencoder. It breaks dense activations into single clear features.
-
-Tools like Gemma Scope and Neuronpedia[@https://www.neuronpedia.org/gemma-scope#main] make these features easy to access by using AI models to generate labels automatically. But this relies purely on observation. It creates a massive gap in how we understand causal network behavior.
-
-### **1. The Limits of Discrete Feature Visualization**
-
-Finding the exact input that triggers a neuron is difficult. Old methods try to optimize prompts in discrete token space. This is highly inefficient and takes thousands of steps.
-
-It creates broken text that models never actually use. We need an efficient and continuous way to build inputs that trigger a downstream neuron and still decode into readable text.
-
-### **2. The Trap of Observational Labels**
-
-Right now people label features based on how often they appear in a dataset. An AI reads text snippets that trigger a feature and guesses the theme. This falls into a distribution trap.
-
-A feature often just controls formatting like LaTeX spacing. But if it shows up next to software licenses in the training data the AI labels it as a software license feature. It misses the true structural purpose.
-
----
-
-## **Our Approach: Closing the Gap**
-
-We move away from discrete token search and observational labels. We treat the early residual stream as a continuous proxy for the input sentence.
-
-We use continuous gradient optimization directly on an early vector. This lets us build the exact math needed to fire a downstream node. We pass this optimized vector through a Patchscope to force the model to decode the math into natural text.
-
-This gives us a true causal explanation of what the feature does. It completely bypasses the bias of static datasets.
-
----
-
-## **Methodology: The Gradient-Based Patchscope Pipeline**
-
-Our pipeline isolates exactly what a downstream neuron looks for. It translates that dense math into clear sparse features and proves its meaning.
-
-We do this in four phases.
-
-### **1. Setting the Baseline**
-
-We need to measure the true signal of an active concept.
-
-First we find a baseline for normal text processing. We load Gemma 2 2B across two GPUs and run 100 samples from a standard dataset. We tokenize the text and extract the early layer activations. We collapse these into a mean tensor.
-
-This creates the **Mean Vector**. It represents the average unactivated state of that layer.
-
----
-
-### **2. Gradient Ascent in Residual Space**
-
-Old methods struggle with discrete optimization. We optimize in the continuous residual stream instead.
-
-We clone the Mean Vector into a learnable parameter **X**. We freeze the model weights. We inject **X** into an early layer using a dummy prompt.
-
-We define the loss as the negative activation of our target node. We use the Adam optimizer over 50 steps to update **X**. This drives the target neuron to its maximum firing rate.
-
-This frozen tensor becomes our **Optimized Vector**.
-
----
-
-### **3. SAE Verification**
-
-We need to understand what makes up the dense Optimized Vector.
-
-We break it down using Sparse Autoencoders. We pass the vector through the Gemma Scope SAE for that specific layer. We extract the highest activating features.
-
-This identifies the readable concepts inside the vector.
-
----
-
-### **4. Contrastive Patchscopes**
-
-Finally we prove the semantic meaning of the Optimized Vector.
-
-We force the model to decode it into plain text. We use a simple prompt asking for a detailed description.
-
-We inject the Optimized Vector to create a **Signal Run**. We inject the Mean Vector to create a **Noise Run**.
-
-We amplify the signal and suppress normal text generation using a weighted contrastive formula:
-
-\[
-FinalLogits = L_{act} + \alpha (L_{act} - L_{mean})
-\]
-
-We set **α = 1.5**. The model generates text based on this math. It outputs a clear definition of the concept.
-
----
-
-## **Results: A Hierarchical Cross-Layer Math Circuit**
-
-By running our gradient-based Patchscope pipeline from two distinct upstream layers (Layer 8 and Layer 11) and targeting the same downstream node (Layer 12, Neuron 8526), we observed the hierarchical construction of a mathematical concept.
-
-The target node, **Layer 12, Neuron 8526**, consistently functioned as an *Abstract Mathematics & Definitional Neuron*.
-
-When forcibly activated via upstream continuous optimization, it drove the model to autoregressively generate high-level geometric theories and abstract number definitions.
-
----
-
-## **Results and the Math Circuit**
-
-We ran our pipeline from Layer 8 and Layer 11. We targeted the same downstream node at Layer 12 Neuron 8526.
-
-We saw the model build a math concept step by step. The target node always works as an abstract math neuron. We forced it to activate. It made the model generate geometric theories and number definitions.
-
----
-
-### **1. Experiment 1 at Layer 8**
-
-We wanted to find the basic building blocks of this circuit.
-
-We injected our vector at Layer 8 and optimized it. After 50 steps the vector drove the target neuron to a high activation of 56.
-
-We passed this vector through the SAE. The main component is **Feature 302**. We put this into the contrastive decoding context.
-
-The model output said it is a number that is not a real number.
-
-This exposes a huge flaw.
-
-Neuronpedia labels Feature 302 as copyright and licensing info because the feature reacts to software licenses in training data. But the feature actually reacts to math syntax too.
-
-Our intervention proves the downstream neuron ignores the copyright meaning entirely. It only cares about the math syntax. It uses the syntax as a trigger to define complex numbers.
-
----
-
-### **2. Experiment 2 at Layer 11**
-
-We moved the injection point closer to the target and repeated the process at Layer 11.
-
-The target neuron reached an even higher activation of 62.75. The SAE decomposition showed **Feature 10839** as the main component.
-
-Decoding this vector gave a precise geometric definition. The model described a set of points in a plane equidistant from a fixed point.
-
-Observational labels fail again here.
-
-The AI annotator labels Feature 10839 as the beginning of a document. But the feature actually fires on algebra and equations.
-
-The output confirms Layer 11 turns low level syntax into concrete math concepts. This triggers the geometric definition of a circle in Layer 12.
-
----
-
-## **Future Work**
-
-This initial study is just the start. We need to turn these findings into a proven framework.
-
-### **1. Validation and Ablation**
-
-We need to prove our vectors are real.
-
-We run gradient ascent using random starting points. This ensures the optimization finds the same features every time.
-
-We also suppress Feature 302 in Layer 8 during a forward pass. If the downstream activation collapses we prove the feature is necessary.
-
----
-
-### **2. Forward Pass Testing**
-
-We know Feature 302 has multiple meanings.
-
-We test its predictive power in normal operations. We write custom prompts to isolate these concepts.
-
-We feed the model pure math formatting and then pure software licenses. This measures the exact threshold needed to trigger the definitional neuron.
-
----
-
-### **3. Direct Interventions**
-
-The best way to prove a circuit is to intervene during normal text generation.
-
-We force activate Feature 302 and Neuron 8526 during unrelated prompts. The model pivots to generating math definitions.
-
-This proves the circuit controls the output.
-
----
-
-### **4. Scaling the Pipeline**
-
-We isolated one pathway so far.
-
-In the next phase we map the entire abstract math graph in Gemma 2 2B. Automating the search across all layers shows how early syntax features work together to form complex concepts.
-
----
-
-### **5. Correcting Datasets**
-
-This method fixes AI generated labels.
-
-We integrate continuous causal verification into the pipeline. We automatically flag and relabel features that datasets get wrong.
-
-This moves the field from guessing to truth.
